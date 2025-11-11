@@ -1,0 +1,59 @@
+:root {
+    --brand-primary: #006d77;
+    --brand-secondary: #ff8c42;
+}
+
+body {
+    background-color: #f7f7f7;
+    font-family: "Segoe UI", Arial, sans-serif;
+}
+
+.card {
+    border-radius: 0.75rem;
+}
+
+.card-header {
+    font-weight: 600;
+    background-color: rgba(0, 0, 0, 0.03);
+}
+
+.slider-value {
+    font-size: 0.9rem;
+    color: #495057;
+    margin-top: 0.35rem;
+}
+
+h1.display-5 {
+    color: var(--brand-primary);
+}
+
+.navbar {
+    background-color: var(--brand-primary);
+}
+
+.label-with-info {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-weight: 600;
+    color: #495057;
+}
+
+.info-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.2rem;
+    height: 1.2rem;
+    border-radius: 50%;
+    background-color: rgba(0, 109, 119, 0.12);
+    color: #006d77;
+    font-size: 0.8rem;
+    cursor: pointer;
+    user-select: none;
+}
+
+.info-icon:focus {
+    outline: 2px solid #006d77;
+    outline-offset: 1px;
+}
