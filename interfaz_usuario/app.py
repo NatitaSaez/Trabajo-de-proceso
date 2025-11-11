@@ -707,4 +707,4 @@ def download_table(n_clicks, store_data):
 
 
 if __name__ == "__main__":
-    app.run_server(debug=True)
+    app.run_server(debug=False)
