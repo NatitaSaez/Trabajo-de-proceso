@@ -1,49 +1,49 @@
-﻿# Simulador de celda H
+# Simulador de celda H
 
-> NÃºcleo numÃ©rico y visualizador web para estudiar la electrÃ³lisis/ORR en una celda tipo H con trazabilidad completa de ecuaciones.
+> Núcleo numérico y visualizador web para estudiar la electrólisis/ORR en una celda tipo H con trazabilidad completa de ecuaciones.
 
 ## Tabla de contenidos
 
-1. [VisiÃ³n general](#visiÃ³n-general)
+1. [Visión general](#visión-general)
 2. [Arquitectura del proyecto](#arquitectura-del-proyecto)
 3. [Requisitos](#requisitos)
-4. [InstalaciÃ³n y ejecuciÃ³n](#instalaciÃ³n-y-ejecuciÃ³n)
+4. [Instalación y ejecución](#instalación-y-ejecución)
 5. [Uso del simulador desde Python](#uso-del-simulador-desde-python)
 6. [Uso de la interfaz web](#uso-de-la-interfaz-web)
 7. [Datos de referencia y supuestos](#datos-de-referencia-y-supuestos)
-8. [ValidaciÃ³n y trazabilidad](#validaciÃ³n-y-trazabilidad)
+8. [Validación y trazabilidad](#validación-y-trazabilidad)
 9. [Diagrama de flujo](#diagrama-de-flujo)
-10. [PrÃ³ximos pasos sugeridos](#prÃ³ximos-pasos-sugeridos)
+10. [Próximos pasos sugeridos](#próximos-pasos-sugeridos)
 
-## VisiÃ³n general
+## Visión general
 
-El repositorio implementa un modelo electroquÃ­mico completo para una celda H, con Ã©nfasis en:
+El repositorio implementa un modelo electroquímico completo para una celda H, con énfasis en:
 
-- **SimulaciÃ³n termodinÃ¡mica y cinÃ©tica:** voltaje ideal de Nernst, sobrepotenciales de activaciÃ³n (Tafel), pÃ©rdidas Ã³hmicas y de concentraciÃ³n.
-- **AnÃ¡lisis DFT de intermedios ORR:** cÃ¡lculo de barreras energÃ©ticas y actividades teÃ³ricas para distintos catalizadores.
-- **Trazabilidad por punto:** cada evaluaciÃ³n registra la ecuaciÃ³n aplicada, los valores sustituidos y el resultado, facilitando auditorÃ­as cientÃ­ficas.
-- **Interfaz web interactiva:** control de parÃ¡metros en tiempo real, grÃ¡ficos y tablas descargables.
+- **Simulación termodinámica y cinética:** voltaje ideal de Nernst, sobrepotenciales de activación (Tafel), pérdidas óhmicas y de concentración.
+- **Análisis DFT de intermedios ORR:** cálculo de barreras energéticas y actividades teóricas para distintos catalizadores.
+- **Trazabilidad por punto:** cada evaluación registra la ecuación aplicada, los valores sustituidos y el resultado, facilitando auditorías científicas.
+- **Interfaz web interactiva:** control de parámetros en tiempo real, gráficos y tablas descargables.
 
 ## Arquitectura del proyecto
 
 ```
 simulador_celda_H_v2/
-â”œâ”€â”€ simulador/                 # NÃºcleo Python
-â”‚   â”œâ”€â”€ constants.py           # Constantes fÃ­sicas
-â”‚   â”œâ”€â”€ models.py              # Dataclasses de configuraciÃ³n
-â”‚   â”œâ”€â”€ data.py                # Valores de referencia y catÃ¡logo de catalizadores
-â”‚   â”œâ”€â”€ electrochemistry.py    # Ecuaciones (Nernst, Tafel, Ohm, transporte)
-â”‚   â”œâ”€â”€ detail.py              # Registro equation-by-equation (EquationStep, PointDetail)
-â”‚   â”œâ”€â”€ orr.py                 # EnergÃ­as de adsorciÃ³n y actividad catalÃ­tica
-â”‚   â”œâ”€â”€ simulation.py          # API de alto nivel (ElectrolyzerSimulator, CatalystAnalyzer)
-â”‚   â””â”€â”€ __init__.py
-â”œâ”€â”€ interfaz_usuario/
-â”‚   â”œâ”€â”€ app.py                 # App Dash con sliders, grÃ¡ficos, tablas y exportaciÃ³n CSV
-â”‚   â”œâ”€â”€ assets/custom.css      # Estilos (tipografÃ­a, tooltips, layout)
-â”‚   â””â”€â”€ requirements.txt       # Dependencias frontend
-â”œâ”€â”€ ejemplo_simulador.py       # Script CLI de ejemplo
-â”œâ”€â”€ diagrama.svg               # Esquema de arquitectura y flujo
-â””â”€â”€ README.md                  # Este documento
+├── simulador/                 # Núcleo Python
+│   ├── constants.py           # Constantes físicas
+│   ├── models.py              # Dataclasses de configuración
+│   ├── data.py                # Valores de referencia y catálogo de catalizadores
+│   ├── electrochemistry.py    # Ecuaciones (Nernst, Tafel, Ohm, transporte)
+│   ├── detail.py              # Registro equation-by-equation (EquationStep, PointDetail)
+│   ├── orr.py                 # Energías de adsorción y actividad catalítica
+│   ├── simulation.py          # API de alto nivel (ElectrolyzerSimulator, CatalystAnalyzer)
+│   └── __init__.py
+├── interfaz_usuario/
+│   ├── app.py                 # App Dash con sliders, gráficos, tablas y exportación CSV
+│   ├── assets/custom.css      # Estilos (tipografía, tooltips, layout)
+│   └── requirements.txt       # Dependencias frontend
+├── ejemplo_simulador.py       # Script CLI de ejemplo
+├── diagrama.svg               # Esquema de arquitectura y flujo
+└── README.md                  # Este documento
 ```
 
 ## Requisitos
@@ -58,19 +58,19 @@ simulador_celda_H_v2/
 pip install -r interfaz_usuario/requirements.txt
 ```
 
-Incluye `dash`, `dash-bootstrap-components` y `plotly`. El nÃºcleo no usa librerÃ­as externas adicionales.
+Incluye `dash`, `dash-bootstrap-components`, `plotly` y `numpy`. El núcleo no usa librerías externas adicionales.
 
-## InstalaciÃ³n y ejecuciÃ³n
+## Instalación y ejecución
 
 ```bash
 git clone <repo>
 cd simulador_celda_H_v2
 pip install -r interfaz_usuario/requirements.txt
 
-# OpciÃ³n 1: ejecutar ejemplo CLI
+# Opción 1: ejecutar ejemplo CLI
 python ejemplo_simulador.py
 
-# OpciÃ³n 2: lanzar la GUI
+# Opción 2: lanzar la GUI
 python interfaz_usuario/app.py
 ```
 
@@ -80,14 +80,14 @@ Para exponer la app a la red local:
 python -c "from interfaz_usuario.app import app; app.run_server(host='0.0.0.0', port=8050, debug=False)"
 ```
 
-Luego visitar `http://<IP_LOCAL>:8050/` (la misma instancia incluye la secciÃ³n de ecuaciones detalladas).
+Luego visitar `http://<IP_LOCAL>:8050/` (la misma instancia incluye la sección de ecuaciones detalladas).
 
 ## Uso del simulador desde Python
 
 ```python
 from simulador import data, detail, simulation
 
-# ConfiguraciÃ³n por defecto (80 Â°C, parÃ¡metros de Pt)
+# Configuración por defecto (80 °C, parámetros de Pt)
 sim = simulation.ElectrolyzerSimulator(data.DEFAULT_CONFIG)
 voltage = sim.voltage(1.0)  # V celda a 1 A/cm2
 print(voltage)
@@ -96,12 +96,12 @@ print(voltage)
 currents = [0.2, 0.5, 1.0, 2.0]
 points = detail.detailed_curve(currents, sim.config)
 for point in points:
-    print(point.table_row())        # resumen numÃ©rico
+    print(point.table_row())        # resumen numérico
     for step in point.steps:        # ecuaciones detalladas
         print(step.name, step.result)
 ```
 
-### AnÃ¡lisis ORR independiente
+### Análisis ORR independiente
 
 ```python
 from simulador import simulation, data
@@ -112,44 +112,43 @@ barriers = analyzer.limiting_barriers(0.9)
 
 ## Uso de la interfaz web
 
-1. Ajusta **Condiciones de operaciÃ³n** (temperatura K, pH) y **ConfiguraciÃ³n de corriente** (mÃ­nima, mÃ¡xima, muestras, corriente de desglose).
-2. Selecciona el **Catalizador** del catÃ¡logo (Pt, Pd, Au, Ni, Ir, Rh). Los tooltips â€œâ“˜â€ describen tÃ©cnicamente cada control.
-3. La secciÃ³n **Valores y grÃ¡ficos** muestra:
-   - Tarjetas con: voltaje ideal, pÃ©rdidas por activaciÃ³n, ohm y concentraciÃ³n.
-   - Curva de polarizaciÃ³n interactiva.
-   - Actividad relativa (escala log) derivada del mÃ³dulo `orr.py`.
+1. Ajusta **Condiciones de operación** (temperatura K, pH) y **Configuración de corriente** (mínima, máxima, muestras, corriente de desglose).
+2. Selecciona el **Catalizador** del catálogo (Pt, Pd, Au, Ni, Ir, Rh). Los tooltips “ⓘ” describen técnicamente cada control.
+3. La sección **Valores y gráficos** muestra:
+   - Tarjetas con: voltaje ideal, pérdidas por activación, ohm y concentración.
+   - Curva de polarización interactiva.
+   - Actividad relativa (escala log) derivada del módulo `orr.py`.
 4. **Datos generados**: tabla resumen (descargable en CSV) y grilla con las ecuaciones evaluadas punto a punto.
-5. **Detalle de ecuaciones**: selecciona un punto para ver todas las fÃ³rmulas y valores utilizados (contentidos en `detail.py`).
+5. **Detalle de ecuaciones**: selecciona un punto para ver todas las fórmulas y valores utilizados (contenidos en `detail.py`).
 
 ## Datos de referencia y supuestos
 
-- Constantes fÃ­sicas: Faraday, R, kB, h, etc. (`constants.py`).
-- TermodinÃ¡mica: Î”HÂ°, Î”SÂ°, potencial estÃ¡ndar a 298 K (data ajustable).
-- CinÃ©tica: corrientes de intercambio y energÃ­as de activaciÃ³n para Ã¡nodo/cÃ¡todo (inputs Arrhenius).
+- Constantes físicas: Faraday, R, kB, h, etc. (`constants.py`).
+- Termodinámica: ΔH°, ΔS°, potencial estándar a 298 K (data ajustable).
+- Cinética: corrientes de intercambio y energías de activación para ánodo/cátodo (inputs Arrhenius).
 - Resistencias: conductividad de membrana y resistencias de contacto/electrolito.
-- Transporte: corriente lÃ­mite modelada con Arrhenius.
-- CatÃ¡logo DFT: energÃ­as de adsorciÃ³n O*/OH* y barreras de disociaciÃ³n por metal (Tabla 2 del informe de requerimientos).
+- Transporte: corriente límite modelada con Arrhenius.
+- Catálogo DFT: energías de adsorción O*/OH* y barreras de disociación por metal (Tabla 2 del informe de requerimientos).
 
-Todos estos parÃ¡metros pueden modificarse en `simulador/data.py` o sustituyendo `ElectrolyzerConfig` con valores experimentales.
+Todos estos parámetros pueden modificarse en `simulador/data.py` o sustituyendo `ElectrolyzerConfig` con valores experimentales.
 
-## ValidaciÃ³n y trazabilidad
+## Validación y trazabilidad
 
 - `simulador/detail.py` produce instancias `PointDetail` con un listado `steps` de `EquationStep`. Cada paso incluye:
-  - Nombre de la ecuaciÃ³n (p. ej. â€œVoltaje idealâ€, â€œSobrepotencial activaciÃ³n Ã¡nodoâ€).
-  - ExpresiÃ³n simbÃ³lica (Nernst, Tafel, etc.).
+  - Nombre de la ecuación (p. ej. “Voltaje ideal”, “Sobrepotencial activación ánodo”).
+  - Expresión simbólica (Nernst, Tafel, etc.).
   - Diccionario de valores sustituidos (temperatura, corrientes, i0, etc.).
-  - Resultado numÃ©rico.
-- La GUI usa esta informaciÃ³n para mostrar tanto resÃºmenes como la lista completa de ecuaciones, lo que facilita validar cada tÃ©rmino frente a la teorÃ­a.
+  - Resultado numérico.
+- La GUI usa esta información para mostrar tanto resúmenes como la lista completa de ecuaciones, lo que facilita validar cada término frente a la teoría.
 
 ## Diagrama de arquitectura y flujo
 
-En `diagrama.svg` encontrarÃ¡s un esquema visual listo para insertar en presentaciones o documentos tÃ©cnicos. Resume:
+En `diagrama.svg` encontrarás un esquema visual listo para insertar en presentaciones o documentos técnicos. Resume:
 
-1. Los mÃ³dulos principales (`constants`, `models`, `data`, `electrochemistry`, `detail`, `orr`, `simulation`) y sus dependencias.
-2. El flujo de trabajo: definiciÃ³n de condiciones, construcciÃ³n de `ElectrolyzerConfig`, evaluaciÃ³n punto a punto y anÃ¡lisis ORR.
-3. Las salidas disponibles (curva de polarizaciÃ³n detallada y anÃ¡lisis de actividad catalÃ­tica).
+1. Los módulos principales (`constants`, `models`, `data`, `electrochemistry`, `detail`, `orr`, `simulation`) y sus dependencias.
+2. El flujo de trabajo: definición de condiciones, construcción de `ElectrolyzerConfig`, evaluación punto a punto y análisis ORR.
+3. Las salidas disponibles (curva de polarización detallada y análisis de actividad catalítica).
 
 Puedes abrirlo con cualquier visor SVG o incrustarlo directamente en reportes para compartir la arquitectura del simulador con otros especialistas.
 
 ![Diagrama de arquitectura y flujo](diagrama.svg)
-
