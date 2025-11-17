@@ -11,7 +11,8 @@ if errorlevel 1 (
     echo Error: no se pudo ejecutar python/pip. Verifica tu instalacion.
     goto :end
 )
-python -m pip install -r "interfaz_usuario\requirements.txt"
+echo Instalando requerimientos de la GUI (dash, pandas, pyyaml)...
+python -m pip install -r "interfaz_usuario\requirements.txt" pandas pyyaml
 if errorlevel 1 (
     echo Error al instalar dependencias de la interfaz.
     goto :end
@@ -24,8 +25,8 @@ if errorlevel 1 (
     goto :end
 )
 
-echo [3/3] Levantando la GUI en http://127.0.0.1:8050 ...
-python "interfaz_usuario\app.py"
+echo [3/3] Levantando la GUI en http://0.0.0.0:8050 (toda la red local) ...
+python "interfaz_usuario\app.py" --host 0.0.0.0 --port 8050
 
 :end
 popd

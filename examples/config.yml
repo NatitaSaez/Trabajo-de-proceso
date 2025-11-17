@@ -1,0 +1,75 @@
+project_name: "demo_celda_h"
+units:
+  j: "A/cm2"    # Nota: la unidad declarativa no se usa en el código actual (el núcleo asume A/cm2 internamente).
+  T: "K"        # Nota: declarativo; no se valida en el código.
+
+operating_conditions:
+  T_list: [298.15, 353.15]   # 25 °C y 80 °C
+  j_min: 0.01                # A/cm2
+  j_max: 1.5                 # A/cm2
+  n_points: 60
+  use_concentration_losses: true
+
+thermo:
+  V_ref: 1.23                # V_rev a 25 °C aprox.
+  delta_s_ref: 163.0         # J/mol/K
+  T_ref: 298.15
+  n: 2
+  use_nernst: false          # Si es false, p_h2/p_o2/activity_h2o no se usan.
+  p_h2: 1.0                  # bar (solo si use_nernst=true)
+  p_o2: 1.0                  # bar (solo si use_nernst=true)
+  activity_h2o: 1.0          # solo si use_nernst=true
+
+electrode_A:
+  # Cátodo: HER en Ni foam (Lee 2022)
+  name: "Ni-HER-Lee2022"
+  kinetic_model: "tafel"
+  n: 2
+  alpha: 0.8                 # efectivo (simplifica alpha_a/alpha_c reportados)
+  j0_ref: 0.00234            # A/cm2  (23.4 A/m2 / 1e4)
+  Ea: 40000                  # J/mol
+  T_ref: 353.15              # K (80 °C)
+
+electrode_B:
+  # Ánodo: OER en Ni foam (Lee 2022)
+  name: "Ni-OER-Lee2022"
+  kinetic_model: "tafel"
+  n: 2
+  alpha: 1.1                 # efectivo para OER
+  j0_ref: 0.00093            # A/cm2 (9.3 A/m2 / 1e4)
+  Ea: 46156                  # J/mol
+  T_ref: 343.15              # K (~70 °C)
+
+ohmic:
+  components:
+    # Ojo: el núcleo usa cm y S/cm. Se convirtieron los datos desde m y S/m.
+    - name: "electrodo_negativo_Ni"
+      delta: 0.07            # cm (0.0007 m)
+      kappa_ref: 1.43e5      # S/cm (1.43e7 S/m)
+      Ea_kappa: 0            # sin dependencia T
+      T_ref: 298.15
+
+    - name: "electrodo_positivo_Ni"
+      delta: 0.07            # cm (0.0007 m)
+      kappa_ref: 1.43e5      # S/cm
+      Ea_kappa: 0
+      T_ref: 298.15
+
+    - name: "separador_Zirfon"
+      delta: 0.046           # cm (0.00046 m)
+      kappa_ref: 0.05        # S/cm (5 S/m)
+      Ea_kappa: 15000        # J/mol
+      T_ref: 298.15
+
+    - name: "electrolito_KOH_30wt"
+      delta: 0.2             # cm (0.002 m)
+      kappa_ref: 6.0         # S/cm (600 S/m)
+      Ea_kappa: 12000        # J/mol
+      T_ref: 353.15
+
+  extra_resistance: 0.02     # ohm*cm2 (contactos/colectores; parámetro libre)
+
+mass_transfer:
+  enabled: true
+  j_lim: 2.0                 # A/cm2 (corriente límite efectiva)
+  Ea_jlim: 0                 # J/mol (sin dependencia inicial)

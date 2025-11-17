@@ -1,52 +1,787 @@
-"""Aplicacion web (v1 y v2) para el simulador de celda H."""
+"""Aplicación Dash v2 para el simulador 0D (celda H)."""
 
 from __future__ import annotations
 
+import base64
+import io
+import json
 import pathlib
 import sys
-import csv
-import io
-from dataclasses import replace
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import dash
 import dash_bootstrap_components as dbc
-import flask
-import numpy as np
+import pandas as pd
 from dash import Dash, Input, Output, State, dash_table, dcc, html
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from simulador import data, detail, simulation
+from simulador.config_v2 import (  # noqa: E402
+    ElectrodeKineticsV2,
+    MassTransferConfig,
+    OhmicConfig,
+    OhmicLayer,
+    OperatingGrid,
+    SimulationConfigV2,
+    ThermoSettings,
+    load_config,
+)
+from simulador.simulation_v2 import PointResultV2, run_simulation_v2  # noqa: E402
 
 
-def _build_config(temperature: float, pH: float) -> simulation.ElectrolyzerSimulator:
-    """Crea un simulador con las condiciones indicadas (temperatura en Kelvin)."""
+# --- Utilidades -------------------------------------------------------------------------------
 
-    conditions = replace(data.DEFAULT_CONFIG.conditions, temperature=temperature, pH=pH)
-    config = replace(data.DEFAULT_CONFIG, conditions=conditions)
-    return simulation.ElectrolyzerSimulator(config)
-
-
-def _polarization(
-    sim: simulation.ElectrolyzerSimulator,
-    current_range: Tuple[float, float],
-    num_points: int,
-) -> Tuple[np.ndarray, List[float]]:
-    currents = np.linspace(current_range[0], current_range[1], num_points)
-    voltages = np.array(sim.polarization_curve(currents))
-    return currents, voltages.tolist()
+def parse_temperatures(text: str) -> List[float]:
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    temps: List[float] = []
+    for p in parts:
+        try:
+            temps.append(float(p))
+        except ValueError:
+            raise ValueError(f"No se pudo interpretar la temperatura '{p}'")
+    if not temps:
+        raise ValueError("Debes ingresar al menos una temperatura separada por comas, ej: 298, 333")
+    return temps
 
 
-def _activity_profile(
-    catalyst_name: str, temperature: float, pH: float, potentials: np.ndarray
-) -> List[float]:
-    analyzer = simulation.CatalystAnalyzer(
-        catalyst=data.CATALYSTS[catalyst_name], temperature=temperature, pH=pH
+def _build_config_from_inputs(values: Dict) -> SimulationConfigV2:
+    op = OperatingGrid(
+        temperatures=parse_temperatures(values["temps"]),
+        j_min=float(values["j_min"]),
+        j_max=float(values["j_max"]),
+        n_points=int(values["n_points"]),
+        use_concentration_losses=values["use_conc"],
     )
-    return analyzer.activity_profile(potentials.tolist())
+    thermo = ThermoSettings(
+        V_ref=float(values["V_ref"]),
+        delta_s_ref=float(values["delta_s_ref"]),
+        T_ref=float(values["T_ref"]),
+        electrons=int(values["n_e"]),
+        use_nernst=bool(values["use_nernst"]),
+        pressure_h2=float(values["p_h2"]),
+        pressure_o2=float(values["p_o2"]),
+        activity_h2o=float(values["a_h2o"]),
+    )
+    electrode_a = ElectrodeKineticsV2(
+        name=values["name_a"],
+        kinetic_model=values["model_a"],
+        n=int(values["n_e"]),
+        alpha=float(values["alpha_a"]) if values["alpha_a"] is not None else None,
+        alpha_a=float(values["alpha_a_a"]) if values["alpha_a_a"] is not None else None,
+        alpha_c=float(values["alpha_c_a"]) if values["alpha_c_a"] is not None else None,
+        j0_ref=float(values["j0_a"]),
+        Ea=float(values["Ea_a"]) if values["Ea_a"] is not None else None,
+        T_ref=float(values["T_ref"]),
+    )
+    electrode_a.validate()
+
+    electrode_b = None
+    if values["enable_b"]:
+        electrode_b = ElectrodeKineticsV2(
+            name=values["name_b"],
+            kinetic_model=values["model_b"],
+            n=int(values["n_e"]),
+            alpha=float(values["alpha_b"]) if values["alpha_b"] is not None else None,
+            alpha_a=float(values["alpha_a_b"]) if values["alpha_a_b"] is not None else None,
+            alpha_c=float(values["alpha_c_b"]) if values["alpha_c_b"] is not None else None,
+            j0_ref=float(values["j0_b"]),
+            Ea=float(values["Ea_b"]) if values["Ea_b"] is not None else None,
+            T_ref=float(values["T_ref"]),
+        )
+        electrode_b.validate()
+
+    layers = []
+    for row in values["ohm_layers"]:
+        try:
+            layers.append(
+                OhmicLayer(
+                    name=row.get("name", "layer"),
+                    delta=float(row.get("delta", 0.0)),
+                    kappa_ref=float(row.get("kappa_ref", 0.0)),
+                    Ea_kappa=float(row["Ea_kappa"]) if row.get("Ea_kappa") not in (None, "") else None,
+                    T_ref=float(row.get("T_ref", values["T_ref"])),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"Capa ohmica inválida: {row}") from exc
+    ohmic = OhmicConfig(layers=layers, extra_resistance=float(values["R_extra"]))
+
+    mass = MassTransferConfig(
+        enabled=bool(values["use_conc"]),
+        j_lim=float(values["j_lim"]) if values["j_lim"] is not None else None,
+        Ea_jlim=float(values["Ea_jlim"]) if values["Ea_jlim"] is not None else None,
+        D_eff=float(values["D_eff"]) if values["D_eff"] is not None else None,
+        C_bulk=float(values["C_bulk"]) if values["C_bulk"] is not None else None,
+        delta_dif=float(values["delta_dif"]) if values["delta_dif"] is not None else None,
+        T_ref=float(values["T_ref"]),
+    )
+
+    return SimulationConfigV2(
+        project_name="celda_H_v2",
+        operating=op,
+        thermo=thermo,
+        electrode_A=electrode_a,
+        electrode_B=electrode_b,
+        ohmic=ohmic,
+        mass_transfer=mass,
+    )
+
+
+def _point_to_row(p: PointResultV2) -> Dict:
+    return {
+        "electrode": p.electrode,
+        "T": p.temperature,
+        "j": p.current_density,
+        "V_cell": p.V_cell,
+        "V_rev": p.V_rev,
+        "eta_act": p.eta_act,
+        "eta_ohm": p.eta_ohm,
+        "eta_conc": p.eta_conc,
+        "r_total": p.r_total,
+        "model": p.model_act,
+    }
+
+
+DEFAULT_OHMIC_LAYERS = [
+    {"name": "membrana", "delta": 0.005, "kappa_ref": 0.1, "Ea_kappa": 15000, "T_ref": 298.15},
+    {"name": "electrolito", "delta": 0.01, "kappa_ref": 0.5, "Ea_kappa": 15000, "T_ref": 298.15},
+]
+
+# --- Defaults from config.yml -----------------------------------------------------------------
+
+def _load_defaults():
+    cfg_path = PROJECT_ROOT / "examples" / "config.yml"
+    try:
+        cfg = load_config(cfg_path)
+    except Exception:
+        return {}
+
+    def _electrode_defaults(electrode: ElectrodeKineticsV2 | None, prefix: str) -> Dict[str, object]:
+        if electrode is None:
+            return {}
+        return {
+            f"name_{prefix}": electrode.name,
+            f"model_{prefix}": electrode.kinetic_model,
+            f"j0_{prefix}": electrode.j0_ref,
+            f"Ea_{prefix}": electrode.Ea,
+            f"alpha_{prefix}": electrode.alpha,
+            f"alpha_a_{prefix}": electrode.alpha_a,
+            f"alpha_c_{prefix}": electrode.alpha_c,
+        }
+
+    ohm_layers = [
+        {"name": l.name, "delta": l.delta, "kappa_ref": l.kappa_ref, "Ea_kappa": l.Ea_kappa, "T_ref": l.T_ref}
+        for l in cfg.ohmic.layers
+    ] or DEFAULT_OHMIC_LAYERS
+
+    temps_list = cfg.operating.temperatures
+    temps_default = min(temps_list) if temps_list else ""
+
+    return {
+        # Si hay lista/rango de T en config, usar el menor valor como default en la UI.
+        "temps": str(temps_default),
+        "j_min": cfg.operating.j_min,
+        "j_max": cfg.operating.j_max,
+        "n_points": cfg.operating.n_points,
+        "use_conc": cfg.operating.use_concentration_losses,
+        "V_ref": cfg.thermo.V_ref,
+        "delta_s_ref": cfg.thermo.delta_s_ref,
+        "T_ref": cfg.thermo.T_ref,
+        "n_e": cfg.thermo.electrons,
+        "use_nernst": cfg.thermo.use_nernst,
+        "p_h2": cfg.thermo.pressure_h2,
+        "p_o2": cfg.thermo.pressure_o2,
+        "a_h2o": cfg.thermo.activity_h2o,
+        "R_extra": cfg.ohmic.extra_resistance,
+        "ohm_layers": ohm_layers,
+        "j_lim": cfg.mass_transfer.j_lim,
+        "Ea_jlim": cfg.mass_transfer.Ea_jlim,
+        "D_eff": cfg.mass_transfer.D_eff,
+        "C_bulk": cfg.mass_transfer.C_bulk,
+        "delta_dif": cfg.mass_transfer.delta_dif,
+        **_electrode_defaults(cfg.electrode_A, "a"),
+        **_electrode_defaults(cfg.electrode_B, "b"),
+    }
+
+
+DEFAULT_CFG_VALUES = _load_defaults()
+
+def _d(key: str, fallback):
+    return DEFAULT_CFG_VALUES.get(key, fallback)
+
+COMMON_STYLES = [dbc.themes.FLATLY]
+app: Dash = dash.Dash(
+    __name__,
+    title="Simulador Celda H - v2",
+    external_stylesheets=COMMON_STYLES,
+    suppress_callback_exceptions=True,
+)
+
+
+def build_number_input(id_, label, value, step, min_=None):
+    return dbc.Col([dbc.Label(label), dbc.Input(id=id_, type="number", value=value, step=step, min=min_)], md=4)
+
+
+# --- Layout -----------------------------------------------------------------------------------
+
+operating_controls = dbc.Card(
+    [
+        dbc.CardHeader("Condiciones de operación"),
+        dbc.CardBody(
+            [
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            [
+                                dbc.Label("Temperaturas (K, separadas por coma)"),
+                                dbc.Input(id="temp-list", value=_d("temps", "298, 333"), type="text"),
+                            ],
+                            md=6,
+                        ),
+                        build_number_input("j-min", "j mín (A/cm²)", _d("j_min", 0.01), 0.01, 0),
+                        build_number_input("j-max", "j máx (A/cm²)", _d("j_max", 1.0), 0.05, 0),
+                        build_number_input("n-points", "Puntos", _d("n_points", 60), 1, 2),
+                    ],
+                    className="gy-2",
+                ),
+                html.Hr(),
+                dbc.Row(
+                    [
+                        build_number_input("V-ref", "V_ref (V)", _d("V_ref", 1.23), 0.01, 0),
+                        build_number_input("delta-s", "ΔS° (J/mol.K)", _d("delta_s_ref", 163.0), 1, None),
+                        build_number_input("T-ref", "T_ref (K)", _d("T_ref", 298.15), 1, 200),
+                        build_number_input("n-electrons", "n e-", _d("n_e", 2), 1, 1),
+                    ],
+                    className="gy-2",
+                ),
+                dbc.Row(
+                    [
+                        build_number_input("p-h2", "p_H2 (bar)", _d("p_h2", 1.0), 0.1, 0),
+                        build_number_input("p-o2", "p_O2 (bar)", _d("p_o2", 1.0), 0.1, 0),
+                        build_number_input("a-h2o", "a_H2O", _d("a_h2o", 1.0), 0.1, 0),
+                        dbc.Col(
+                            dbc.Checklist(
+                                options=[{"label": "Usar Nernst", "value": "nernst"}],
+                                value=["nernst"] if _d("use_nernst", False) else [],
+                                id="use-nernst",
+                                switch=True,
+                            ),
+                            md=3,
+                        ),
+                    ],
+                    className="gy-2",
+                ),
+            ]
+        ),
+    ]
+)
+
+
+def electrode_card(prefix: str, title: str, enable_toggle: bool = False) -> dbc.Card:
+    header_children = [title]
+    if enable_toggle:
+        header_children.append(
+            dbc.Checklist(options=[{"label": "Activar electrodo B", "value": "enable"}], value=[], id="enable-b")
+        )
+    return dbc.Card(
+        [
+            dbc.CardHeader(header_children),
+            dbc.CardBody(
+                [
+                    dbc.Row(
+                    [
+                        dbc.Col([dbc.Label("Nombre"), dbc.Input(id=f"name-{prefix}", value=_d(f"name_{prefix}", title), type="text")], md=4),
+                        dbc.Col(
+                            [
+                                dbc.Label("Modelo cinético"),
+                                dcc.Dropdown(
+                                    id=f"model-{prefix}",
+                                        options=[
+                                        {"label": "Tafel", "value": "tafel"},
+                                        {"label": "Butler-Volmer", "value": "butler-volmer"},
+                                    ],
+                                    value=_d(f"model_{prefix}", "tafel"),
+                                    clearable=False,
+                                ),
+                            ],
+                            md=4,
+                        ),
+                            dbc.Col(
+                                [
+                                    dbc.Label("j0_ref (A/cm²)"),
+                                    dbc.Input(id=f"j0-{prefix}", type="number", value=_d(f"j0_{prefix}", 0.01), step=0.001, min=0),
+                                ],
+                                md=4,
+                            ),
+                    ],
+                    className="gy-2",
+                ),
+                dbc.Row(
+                    [
+                        build_number_input(f"Ea-{prefix}", "Ea (J/mol)", _d(f"Ea_{prefix}", 40000), 1000, 0),
+                        build_number_input(f"alpha-{prefix}", "alpha (Tafel/BV sim.)", _d(f"alpha_{prefix}", None), 0.05, 0),
+                        build_number_input(f"alpha-a-{prefix}", "alpha_a (BV)", _d(f"alpha_a_{prefix}", None), 0.05, 0),
+                        build_number_input(f"alpha-c-{prefix}", "alpha_c (BV)", _d(f"alpha_c_{prefix}", None), 0.05, 0),
+                    ],
+                    className="gy-2",
+                ),
+            ]
+        ),
+        ]
+    )
+
+
+ohmic_table = dash_table.DataTable(
+    id="ohm-layers",
+    columns=[
+        {"name": "name", "id": "name", "type": "text"},
+        {"name": "delta (cm)", "id": "delta", "type": "numeric"},
+        {"name": "kappa_ref (S/cm)", "id": "kappa_ref", "type": "numeric"},
+        {"name": "Ea_kappa (J/mol)", "id": "Ea_kappa", "type": "numeric"},
+        {"name": "T_ref (K)", "id": "T_ref", "type": "numeric"},
+    ],
+    editable=True,
+    row_deletable=True,
+    data=_d("ohm_layers", DEFAULT_OHMIC_LAYERS),
+    style_table={"overflowX": "auto"},
+    style_cell={"padding": "4px"},
+)
+
+ohmic_card = dbc.Card(
+    [
+        dbc.CardHeader("Pérdidas óhmicas"),
+        dbc.CardBody(
+            [
+                dbc.Button("Agregar capa", id="add-layer", color="secondary", size="sm", className="mb-2"),
+                ohmic_table,
+                dbc.Row(
+                    [
+                        build_number_input("R-extra", "Resistencia extra (Ω·cm²)", _d("R_extra", 0.02), 0.01, 0),
+                    ],
+                    className="gy-2 mt-2",
+                ),
+            ]
+        ),
+    ]
+)
+
+mass_card = dbc.Card(
+    [
+        dbc.CardHeader("Pérdidas por concentración"),
+        dbc.CardBody(
+            [
+                dbc.Checklist(options=[{"label": "Incluir η_conc", "value": "conc"}], value=[], id="use-conc", switch=True),
+                dbc.Row(
+                    [
+                        build_number_input("j-lim", "j_lim (A/cm²)", _d("j_lim", None), 0.1, 0),
+                        build_number_input("Ea-jlim", "Ea j_lim (J/mol)", _d("Ea_jlim", None), 1000, 0),
+                        build_number_input("D-eff", "D_eff (cm²/s)", _d("D_eff", None), 0.0001, 0),
+                        build_number_input("C-bulk", "C_bulk (mol/cm³)", _d("C_bulk", None), 0.0001, 0),
+                        build_number_input("delta-dif", "delta_dif (cm)", _d("delta_dif", None), 0.001, 0),
+                    ],
+                    className="gy-2",
+                ),
+            ]
+        ),
+    ]
+)
+
+layout_results = dbc.Row(
+    [
+        dbc.Col(dbc.Card([dbc.CardHeader("Curvas simuladas"), dbc.CardBody([dcc.Graph(id="curve-fig")])]), md=8),
+        dbc.Col(
+            dbc.Card(
+                [
+                    dbc.CardHeader("Curva ΔV (B - A)"),
+                    dbc.CardBody([dcc.Graph(id="delta-fig")]),
+                ]
+            ),
+            md=4,
+        ),
+    ],
+    className="gy-3",
+)
+
+table_results = dbc.Card(
+    [
+        dbc.CardHeader("Tabla de resultados"),
+        dbc.CardBody(
+            [
+                dash_table.DataTable(
+                    id="results-table",
+                    columns=[
+                        {"name": "electrode", "id": "electrode"},
+                        {"name": "T (K)", "id": "T"},
+                        {"name": "j (A/cm²)", "id": "j"},
+                        {"name": "V_cell (V)", "id": "V_cell"},
+                        {"name": "V_rev (V)", "id": "V_rev"},
+                        {"name": "eta_act", "id": "eta_act"},
+                        {"name": "eta_ohm", "id": "eta_ohm"},
+                        {"name": "eta_conc", "id": "eta_conc"},
+                        {"name": "r_total", "id": "r_total"},
+                        {"name": "modelo", "id": "model"},
+                    ],
+                    style_table={"overflowX": "auto"},
+                    sort_action="native",
+                    row_selectable="single",
+                    page_size=10,
+                ),
+                html.Div(id="error-msg", className="text-danger mt-2"),
+            ]
+        ),
+    ],
+    className="my-3",
+)
+
+detail_card = dbc.Card(
+    [
+        dbc.CardHeader("Trazabilidad del punto seleccionado"),
+        dbc.CardBody(
+            [
+                html.Div(id="detail-header", className="mb-2"),
+                dash_table.DataTable(
+                    id="steps-table",
+                    columns=[
+                        {"name": "Paso", "id": "name"},
+                        {"name": "Expresión", "id": "expression"},
+                        {"name": "Resultado", "id": "result"},
+                        {"name": "Valores", "id": "values"},
+                    ],
+                    style_table={"overflowX": "auto"},
+                    style_cell={"whiteSpace": "pre-line"},
+                ),
+                html.Pre(id="step-values", className="mt-3 bg-light p-2 border"),
+            ]
+        ),
+    ]
+)
+
+upload_card = dbc.Card(
+    [
+        dbc.CardHeader("Datos experimentales (CSV j_exp, V_exp)"),
+        dbc.CardBody(
+            [
+                dcc.Upload(
+                    id="upload-exp",
+                    children=html.Div(["Arrastra o selecciona un CSV"]),
+                    style={
+                        "width": "100%",
+                        "height": "60px",
+                        "lineHeight": "60px",
+                        "borderWidth": "1px",
+                        "borderStyle": "dashed",
+                        "borderRadius": "3px",
+                        "textAlign": "center",
+                    },
+                ),
+                html.Div(id="upload-status", className="text-muted mt-2"),
+            ]
+        ),
+    ]
+)
+
+app.layout = dbc.Container(
+    [
+        html.H2("Simulador de celda H - v2"),
+        dbc.Row([dbc.Col(operating_controls, md=12)], className="gy-3"),
+        dbc.Row(
+            [dbc.Col(electrode_card("a", "Electrodo A"), md=6), dbc.Col(electrode_card("b", "Electrodo B", enable_toggle=True), md=6)],
+            className="gy-3",
+        ),
+        dbc.Row([dbc.Col(ohmic_card, md=7), dbc.Col(mass_card, md=5)], className="gy-3"),
+        dbc.Row(
+            [
+                dbc.Col(upload_card, md=6),
+                dbc.Col(dbc.Button("Simular", id="run-btn", color="primary", className="mt-4"), md=2),
+            ],
+            className="gy-3",
+        ),
+        html.Hr(),
+        layout_results,
+        table_results,
+        detail_card,
+        dcc.Store(id="store-results"),
+        dcc.Store(id="store-exp"),
+    ],
+    fluid=True,
+)
+
+
+# --- Callbacks --------------------------------------------------------------------------------
+
+@app.callback(
+    Output("ohm-layers", "data"),
+    Input("add-layer", "n_clicks"),
+    State("ohm-layers", "data"),
+    prevent_initial_call=True,
+)
+def add_layer(n_clicks, rows):
+    rows = rows or []
+    rows.append({"name": f"capa_{len(rows)+1}", "delta": 0.001, "kappa_ref": 0.1, "Ea_kappa": None, "T_ref": 298.15})
+    return rows
+
+
+def _parse_upload(contents: str, filename: str) -> Tuple[pd.DataFrame, str]:
+    content_type, content_string = contents.split(",")
+    decoded = base64.b64decode(content_string)
+    df = pd.read_csv(io.StringIO(decoded.decode("utf-8")))
+    # Normalizar encabezados para aceptar variantes comunes
+    normalized = {col.strip().lower(): col for col in df.columns}
+    j_col = None
+    v_col = None
+    for key in ("j_exp", "current_density_a_m2", "current_density_a_cm2", "j"):
+        if key in normalized:
+            j_col = normalized[key]
+            break
+    for key in ("v_exp", "voltage_v", "voltage", "v"):
+        if key in normalized:
+            v_col = normalized[key]
+            break
+    if j_col is None or v_col is None:
+        raise ValueError("El CSV debe tener columnas j_exp,V_exp (o equivalentes: current_density..., voltage_V).")
+    df = df.rename(columns={j_col: "j_exp", v_col: "V_exp"})
+    return df[["j_exp", "V_exp"]], f"{filename}: {len(df)} filas cargadas"
+
+
+@app.callback(
+    Output("upload-status", "children"),
+    Output("store-exp", "data"),
+    Input("upload-exp", "contents"),
+    State("upload-exp", "filename"),
+    prevent_initial_call=True,
+)
+def handle_upload(contents, filename):
+    try:
+        df, msg = _parse_upload(contents, filename)
+    except Exception as exc:  # noqa: BLE001
+        return f"Error al leer CSV: {exc}", None
+    return msg, df.to_dict("records")
+
+
+@app.callback(
+    Output("store-results", "data"),
+    Output("error-msg", "children"),
+    Input("run-btn", "n_clicks"),
+    State("temp-list", "value"),
+    State("j-min", "value"),
+    State("j-max", "value"),
+    State("n-points", "value"),
+    State("V-ref", "value"),
+    State("delta-s", "value"),
+    State("T-ref", "value"),
+    State("n-electrons", "value"),
+    State("use-nernst", "value"),
+    State("p-h2", "value"),
+    State("p-o2", "value"),
+    State("a-h2o", "value"),
+    State("name-a", "value"),
+    State("model-a", "value"),
+    State("j0-a", "value"),
+    State("Ea-a", "value"),
+    State("alpha-a", "value"),
+    State("alpha-a-a", "value"),
+    State("alpha-c-a", "value"),
+    State("name-b", "value"),
+    State("model-b", "value"),
+    State("j0-b", "value"),
+    State("Ea-b", "value"),
+    State("alpha-b", "value"),
+    State("alpha-a-b", "value"),
+    State("alpha-c-b", "value"),
+    State("enable-b", "value"),
+    State("ohm-layers", "data"),
+    State("R-extra", "value"),
+    State("use-conc", "value"),
+    State("j-lim", "value"),
+    State("Ea-jlim", "value"),
+    State("D-eff", "value"),
+    State("C-bulk", "value"),
+    State("delta-dif", "value"),
+    prevent_initial_call=True,
+)
+def run_simulation(
+    _click,
+    temp_list,
+    j_min,
+    j_max,
+    n_points,
+    V_ref,
+    delta_s,
+    T_ref,
+    n_e,
+    use_nernst,
+    p_h2,
+    p_o2,
+    a_h2o,
+    name_a,
+    model_a,
+    j0_a,
+    Ea_a,
+    alpha_a,
+    alpha_a_a,
+    alpha_c_a,
+    name_b,
+    model_b,
+    j0_b,
+    Ea_b,
+    alpha_b,
+    alpha_a_b,
+    alpha_c_b,
+    enable_b,
+    ohm_layers,
+    R_extra,
+    use_conc,
+    j_lim,
+    Ea_jlim,
+    D_eff,
+    C_bulk,
+    delta_dif,
+):
+    values = {
+        "temps": temp_list,
+        "j_min": j_min,
+        "j_max": j_max,
+        "n_points": n_points,
+        "V_ref": V_ref,
+        "delta_s_ref": delta_s,
+        "T_ref": T_ref,
+        "n_e": n_e,
+        "use_nernst": "nernst" in (use_nernst or []),
+        "p_h2": p_h2,
+        "p_o2": p_o2,
+        "a_h2o": a_h2o,
+        "name_a": name_a,
+        "model_a": model_a,
+        "j0_a": j0_a,
+        "Ea_a": Ea_a,
+        "alpha_a": alpha_a,
+        "alpha_a_a": alpha_a_a,
+        "alpha_c_a": alpha_c_a,
+        "name_b": name_b,
+        "model_b": model_b,
+        "j0_b": j0_b,
+        "Ea_b": Ea_b,
+        "alpha_b": alpha_b,
+        "alpha_a_b": alpha_a_b,
+        "alpha_c_b": alpha_c_b,
+        "enable_b": "enable" in (enable_b or []),
+        "ohm_layers": ohm_layers or [],
+        "R_extra": R_extra,
+        "use_conc": "conc" in (use_conc or []),
+        "j_lim": j_lim,
+        "Ea_jlim": Ea_jlim,
+        "D_eff": D_eff,
+        "C_bulk": C_bulk,
+        "delta_dif": delta_dif,
+    }
+    try:
+        cfg = _build_config_from_inputs(values)
+        results = run_simulation_v2(cfg)
+    except Exception as exc:  # noqa: BLE001
+        return None, f"Error: {exc}"
+
+    rows = []
+    for label, points in results.items():
+        for p in points:
+            row = _point_to_row(p)
+            row["label"] = label
+            row["steps"] = [s.to_dict() for s in p.steps]
+            row["j_lim"] = p.j_lim
+            rows.append(row)
+    return rows, ""
+
+
+@app.callback(
+    Output("curve-fig", "figure"),
+    Output("delta-fig", "figure"),
+    Input("store-results", "data"),
+    Input("store-exp", "data"),
+)
+def update_figures(data, exp_data):
+    if not data:
+        return {"data": [], "layout": {"template": "plotly_white"}}, _blank_delta()
+    df = pd.DataFrame(data)
+    fig = {"data": [], "layout": {"template": "plotly_white", "xaxis": {"title": "j (A/cm²)"}, "yaxis": {"title": "V_cell (V)"}}}
+    for (label, T), grp in df.groupby(["label", "T"]):
+        grp_sorted = grp.sort_values("j")
+        fig["data"].append(
+            {"x": grp_sorted["j"], "y": grp_sorted["V_cell"], "mode": "lines+markers", "name": f"{label} @ {T}K"}
+        )
+
+    if exp_data:
+        exp_df = pd.DataFrame(exp_data)
+        fig["data"].append({"x": exp_df["j_exp"], "y": exp_df["V_exp"], "mode": "markers", "name": "Exp", "marker": {"color": "black"}})
+
+    delta_fig = _blank_delta()
+    if {"A", "B"}.issubset(set(df["label"].unique())):
+        delta_lines = []
+        for T in df["T"].unique():
+            a = df[(df["label"] == "A") & (df["T"] == T)].sort_values("j")
+            b = df[(df["label"] == "B") & (df["T"] == T)].sort_values("j")
+            if len(a) and len(b) and len(a) == len(b):
+                delta = b["V_cell"].values - a["V_cell"].values
+                delta_lines.append({"x": a["j"], "y": delta, "mode": "lines+markers", "name": f"ΔV @ {T}K"})
+        if delta_lines:
+            delta_fig = {"data": delta_lines, "layout": {"template": "plotly_white", "xaxis": {"title": "j"}, "yaxis": {"title": "ΔV (B-A)"}}}
+
+    return fig, delta_fig
+
+
+def _blank_delta():
+    return {"data": [], "layout": {"template": "plotly_white", "xaxis": {"title": "j"}, "yaxis": {"title": "ΔV (B-A)"}}}
+
+
+@app.callback(
+    Output("results-table", "data"),
+    Input("store-results", "data"),
+)
+def update_table(data):
+    return data or []
+
+
+@app.callback(
+    Output("detail-header", "children"),
+    Output("steps-table", "data"),
+    Output("step-values", "children"),
+    Input("results-table", "selected_rows"),
+    State("results-table", "data"),
+    State("store-results", "data"),
+)
+def update_detail(selected_rows, table_data, store_data):
+    if not store_data or selected_rows is None or not table_data:
+        return "Selecciona una fila para ver las ecuaciones.", [], ""
+    idx = selected_rows[0]
+    selected = table_data[idx]
+    point = next(
+        (p for p in store_data if p["electrode"] == selected["electrode"] and p["T"] == selected["T"] and p["j"] == selected["j"]),
+        None,
+    )
+    if not point:
+        return "No se encontró el punto seleccionado.", [], ""
+    steps_raw = point.get("steps", [])
+    steps_table = [
+        {
+            "name": s["name"],
+            "expression": s["expression"],
+            "result": f"{s['result']:.6g}",
+            "values": "\n".join(f"{k}: {v}" for k, v in s.get("values", {}).items()),
+        }
+        for s in steps_raw
+    ]
+    detail_payload = {
+        "V_rev": selected["V_rev"],
+        "eta_act": selected["eta_act"],
+        "eta_ohm": selected["eta_ohm"],
+        "eta_conc": selected["eta_conc"],
+        "r_total": selected["r_total"],
+        "modelo": selected["model"],
+        "j_lim": point.get("j_lim"),
+        "pasos": [{s["name"]: s.get("values", {})} for s in steps_raw],
+    }
+    values_text = json.dumps(detail_payload, indent=2)
+    return f"{selected['electrode']} @ {selected['T']}K, j={selected['j']} A/cm²", steps_table, values_text
 
 
 def _blank_figure(x_title: str, y_title: str, message: str) -> dict:
@@ -68,642 +803,6 @@ def _blank_figure(x_title: str, y_title: str, message: str) -> dict:
             ],
         },
     }
-
-
-def _validate_currents(current_min: float | None, current_max: float | None, focus_current: float | None) -> str | None:
-    if current_min is None or current_max is None or focus_current is None:
-        return "Completa los valores de corriente para generar la simulacion."
-    if current_min <= 0 or current_max <= 0:
-        return "Las corrientes deben ser mayores que cero."
-    if current_min >= current_max:
-        return "La corriente minima debe ser menor que la maxima."
-    if focus_current <= 0:
-        return "La corriente de referencia debe ser mayor que cero."
-    return None
-
-
-FIELD_DESCRIPTIONS = {
-    "temperature": "Temperatura de operacion de la celda en Kelvin; afecta el potencial ideal, la cinetica y el transporte ionico.",
-    "ph": "pH del electrolito. Ajusta la energia libre de protones utilizada en los calculos termodinamicos.",
-    "current_min": "Limite inferior del barrido de densidad de corriente para la curva de polarizacion.",
-    "current_max": "Limite superior del barrido de densidad de corriente para la curva de polarizacion.",
-    "samples": "Numero de puntos discretos utilizados para trazar la curva entre las corrientes minima y maxima.",
-    "focus_current": "Punto especifico de densidad de corriente usado para desglosar los sobrepotenciales.",
-    "catalyst": "Conjunto de parametros DFT (energias de adsorcion y barreras) asociados al catalizador seleccionado.",
-}
-
-
-def label_with_info(text: str, tooltip_id: str, field_key: str) -> html.Div:
-    return html.Div(
-        [
-            html.Span(text),
-            html.Span("ⓘ", id=tooltip_id, className="info-icon", tabIndex=0),
-            dbc.Tooltip(FIELD_DESCRIPTIONS[field_key], target=tooltip_id, placement="top"),
-        ],
-        className="label-with-info",
-    )
-
-
-def _component_id(prefix: str | None, suffix: str) -> str:
-    if prefix:
-        return f"{prefix}-{suffix}"
-    return suffix
-
-
-CATALYST_OPTIONS = [
-    {"label": data.CATALYSTS[name].name, "value": name} for name in data.CATALYSTS
-]
-
-COMMON_STYLES = [dbc.themes.SANDSTONE]
-server = flask.Flask(__name__)
-
-app: Dash = dash.Dash(
-    __name__,
-    title="Simulador Celda H",
-    external_stylesheets=COMMON_STYLES,
-    suppress_callback_exceptions=True,
-    server=server,
-)
-
-
-def _cards_section(prefix: str | None) -> dbc.Row:
-    cards = [
-        dbc.Col(
-            dbc.Card([dbc.CardHeader("Voltaje ideal"), html.H3(id=_component_id(prefix, "card-videal"))]),
-            md=3,
-        ),
-        dbc.Col(
-            dbc.Card([dbc.CardHeader("Perdida activacion"), html.H3(id=_component_id(prefix, "card-eta-act"))]),
-            md=3,
-        ),
-        dbc.Col(
-            dbc.Card([dbc.CardHeader("Perdida ohmica"), html.H3(id=_component_id(prefix, "card-eta-ohm"))]),
-            md=3,
-        ),
-        dbc.Col(
-            dbc.Card(
-                [dbc.CardHeader("Perdida concentracion"), html.H3(id=_component_id(prefix, "card-eta-conc"))]
-            ),
-            md=3,
-        ),
-    ]
-    return dbc.Row(cards, className="gy-3")
-
-
-def _graphs_section(prefix: str | None) -> dbc.Row:
-    return dbc.Row(
-        [
-            dbc.Col(
-                        dbc.Card(
-                            [
-                                dbc.CardHeader("Curva de polarizacion"),
-                                dcc.Graph(id=_component_id(prefix, "polarization-graph")),
-                            ]
-                        ),
-                        md=7,
-                    ),
-            dbc.Col(
-                        dbc.Card(
-                            [
-                                dbc.CardHeader("Actividad catalitica"),
-                                dcc.Graph(id=_component_id(prefix, "activity-graph")),
-                            ]
-                        ),
-                        md=5,
-            ),
-        ],
-        className="gy-3",
-    )
-
-
-def _hero_section() -> dbc.Container:
-    return dbc.Container(
-        [
-            html.H1("Simulador de celda H 0D", className="display-5"),
-            html.P(
-                "Esta version muestra la curva, una tabla de resultados y el detalle de las ecuaciones evaluadas "
-                "en cada punto.",
-                className="lead",
-            ),
-        ],
-        className="py-4",
-    )
-
-
-def _control_panel() -> dbc.Card:
-    return dbc.Card(
-        dbc.CardBody(
-            [
-                html.H5("Condiciones de operacion", className="card-title"),
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            [
-                                label_with_info("Temperatura (K)", "temperature-info", "temperature"),
-                                dcc.Slider(
-                                    id="temperature-slider",
-                                    min=313,
-                                    max=373,
-                                    step=1,
-                                    value=353,
-                                    marks=None,
-                                    tooltip={"placement": "bottom"},
-                                ),
-                                html.Div(id="temperature-display", className="slider-value"),
-                            ],
-                            md=6,
-                        ),
-                        dbc.Col(
-                            [
-                                label_with_info("pH", "ph-info", "ph"),
-                                dcc.Slider(
-                                    id="ph-slider",
-                                    min=0,
-                                    max=14,
-                                    step=0.1,
-                                    value=0.0,
-                                    marks={0: "0", 7: "7", 14: "14"},
-                                    tooltip={"placement": "bottom"},
-                                ),
-                                html.Div(id="ph-display", className="slider-value"),
-                            ],
-                            md=6,
-                        ),
-                    ],
-                    className="gy-3",
-                ),
-                html.Hr(),
-                html.H5("Configuracion de corriente"),
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            [
-                                label_with_info(
-                                    "Corriente minima (A/cm^2)",
-                                    "current-min-info",
-                                    "current_min",
-                                ),
-                                dbc.Input(id="current-min", type="number", value=0.2, step=0.1, min=0.01),
-                            ],
-                            md=4,
-                        ),
-                        dbc.Col(
-                            [
-                                label_with_info(
-                                    "Corriente maxima (A/cm^2)",
-                                    "current-max-info",
-                                    "current_max",
-                                ),
-                                dbc.Input(id="current-max", type="number", value=2.0, step=0.1, min=0.2),
-                            ],
-                            md=4,
-                        ),
-                        dbc.Col(
-                            [
-                                label_with_info("Muestras en curva", "samples-info", "samples"),
-                                dcc.Slider(
-                                    id="samples-slider",
-                                    min=5,
-                                    max=40,
-                                    step=1,
-                                    value=20,
-                                    marks={i: str(i) for i in range(5, 41, 5)},
-                                    tooltip={"placement": "bottom"},
-                                ),
-                                html.Div(id="samples-display", className="slider-value"),
-                            ],
-                            md=4,
-                        ),
-                    ],
-                    className="gy-3",
-                ),
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            [
-                                label_with_info(
-                                    "Corriente para desglose (A/cm^2)",
-                                    "focus-current-info",
-                                    "focus_current",
-                                ),
-                                dbc.Input(id="focus-current", type="number", value=1.0, step=0.1, min=0.1),
-                            ],
-                            md=6,
-                        ),
-                        dbc.Col(
-                            [
-                                label_with_info("Catalizador", "catalyst-info", "catalyst"),
-                                dcc.Dropdown(
-                                    id="catalyst-dropdown",
-                                    options=CATALYST_OPTIONS,
-                                    value="Pt",
-                                    clearable=False,
-                                ),
-                            ],
-                            md=6,
-                        ),
-                    ],
-                    className="gy-3",
-                ),
-            ]
-        ),
-        className="shadow-sm",
-    )
-
-
-def _table_section() -> dbc.Card:
-    return dbc.Card(
-        [
-            dbc.CardHeader(
-                dbc.Row(
-                    [
-                        dbc.Col(html.Span("Tabla de resultados"), md=8),
-                        dbc.Col(
-                            dbc.Button(
-                                "Descargar CSV",
-                                id="download-btn",
-                                color="primary",
-                                size="sm",
-                                className="float-end",
-                            ),
-                            md=4,
-                        ),
-                    ],
-                    align="center",
-                )
-            ),
-            dash_table.DataTable(
-                id="results-table",
-                columns=[
-                    {"name": "i (A/cm^2)", "id": "current"},
-                    {"name": "V total (V)", "id": "voltage"},
-                    {"name": "V ideal (V)", "id": "V_ideal"},
-                    {"name": "eta_act total (V)", "id": "eta_act_total"},
-                    {"name": "eta_act anodo (V)", "id": "eta_act_an"},
-                    {"name": "eta_act catodo (V)", "id": "eta_act_cat"},
-                    {"name": "eta_ohm (V)", "id": "eta_ohm"},
-                    {"name": "eta_conc (V)", "id": "eta_conc"},
-                ],
-                data=[],
-                style_table={"maxHeight": "320px", "overflowY": "auto"},
-                style_cell={"textAlign": "center"},
-                row_selectable="single",
-                selected_rows=[],
-            ),
-        ]
-    )
-
-
-def _points_grid_section() -> dbc.Card:
-    return dbc.Card(
-        [
-            dbc.CardHeader("Grilla completa de puntos y ecuaciones"),
-            dash_table.DataTable(
-                id="points-grid",
-                columns=[
-                    {"name": "i (A/cm^2)", "id": "current"},
-                    {"name": "V total (V)", "id": "voltage"},
-                    {"name": "Ecuaciones evaluadas", "id": "equations"},
-                ],
-                data=[],
-                style_table={"maxHeight": "320px", "overflowY": "auto"},
-                style_cell={"whiteSpace": "pre-line", "textAlign": "left"},
-            ),
-        ]
-    )
-
-
-def _detail_section() -> dbc.Card:
-    return dbc.Card(
-        [
-            dbc.CardHeader("Detalle de ecuaciones"),
-            dbc.CardBody(
-                [
-                    html.Div(id="selected-point"),
-                    dash_table.DataTable(
-                        id="equation-steps-table",
-                        columns=[
-                            {"name": "Paso", "id": "name"},
-                            {"name": "Expresion", "id": "expression"},
-                            {"name": "Resultado", "id": "result"},
-                        ],
-                        data=[],
-                        style_table={"maxHeight": "260px", "overflowY": "auto"},
-                        style_cell={"textAlign": "left", "whiteSpace": "normal"},
-                    ),
-                    html.Div(id="equation-detail", className="mt-3"),
-                ]
-            ),
-        ]
-    )
-
-
-app.layout = dbc.Container(
-    [
-        _hero_section(),
-        html.H2("Condiciones de operacion", className="mt-4"),
-        _control_panel(),
-        html.Hr(),
-        html.H2("Valores y graficos", className="mt-4"),
-        html.Div(id="alert-placeholder"),
-        _cards_section(None),
-        html.Div(className="my-3"),
-        _graphs_section(None),
-        html.Hr(),
-        html.H2("Datos generados", className="mt-4"),
-        html.H5("Tabla de resultados", className="mt-2"),
-        dbc.Row(
-            [
-                dbc.Col(_table_section(), md=5),
-                dbc.Col(_points_grid_section(), md=7),
-            ],
-            className="gy-4",
-        ),
-        html.Hr(),
-        html.H2("Detalle de ecuaciones", className="mt-4"),
-        _detail_section(),
-        dcc.Download(id="download-table"),
-        dcc.Store(id="detail-store"),
-    ],
-    fluid=True,
-    className="pb-4",
-)
-
-
-# ---------------------------------------------------------------------------------------------
-# Callbacks V1
-
-
-@app.callback(Output("temperature-display", "children"), Input("temperature-slider", "value"))
-def update_temperature_display(value: float) -> str:
-    return f"{value:.1f} K"
-
-
-@app.callback(Output("ph-display", "children"), Input("ph-slider", "value"))
-def update_ph_display(value: float) -> str:
-    return f"pH {value:.1f}"
-
-
-@app.callback(Output("samples-display", "children"), Input("samples-slider", "value"))
-def update_samples_display(value: int) -> str:
-    return f"{value} puntos"
-
-
-@app.callback(
-    [
-        Output("polarization-graph", "figure"),
-        Output("activity-graph", "figure"),
-        Output("card-videal", "children"),
-        Output("card-eta-act", "children"),
-        Output("card-eta-ohm", "children"),
-        Output("card-eta-conc", "children"),
-        Output("results-table", "data"),
-        Output("points-grid", "data"),
-        Output("results-table", "selected_rows"),
-        Output("detail-store", "data"),
-        Output("alert-placeholder", "children"),
-    ],
-    [
-        Input("temperature-slider", "value"),
-        Input("ph-slider", "value"),
-        Input("current-min", "value"),
-        Input("current-max", "value"),
-        Input("samples-slider", "value"),
-        Input("focus-current", "value"),
-        Input("catalyst-dropdown", "value"),
-    ],
-)
-def update_outputs(
-    temperature: float,
-    pH: float,
-    current_min: float,
-    current_max: float,
-    samples: int,
-    focus_current: float,
-    catalyst: str,
-):
-    error = _validate_currents(current_min, current_max, focus_current)
-    if error:
-        alert = dbc.Alert(error, color="danger", dismissable=True)
-        placeholder_fig = _blank_figure("Corriente (A/cm^2)", "Voltaje (V)", "Ajusta los valores para simular.")
-        placeholder_act = _blank_figure("Potencial (V vs SHE)", "Actividad relativa", "Ajusta los valores para simular.")
-        return (
-            placeholder_fig,
-            placeholder_act,
-            "--",
-            "--",
-            "--",
-            "--",
-            [],
-            [],
-            [],
-            [],
-            alert,
-        )
-
-    sim = _build_config(temperature, pH)
-    currents = np.linspace(current_min, current_max, samples)
-    details = detail.detailed_curve(currents.tolist(), sim.config)
-    voltages = [point.voltage for point in details]
-    table_rows_raw = [point.table_row() for point in details]
-    table_rows = [
-        {
-            "current": f"{row['current']:.3f}",
-            "voltage": f"{row['voltage']:.3f}",
-            "V_ideal": f"{row['V_ideal']:.3f}",
-            "eta_act_total": f"{row['eta_act_total']:.3f}",
-            "eta_act_an": f"{row['eta_act_an']:.3f}",
-            "eta_act_cat": f"{row['eta_act_cat']:.3f}",
-            "eta_ohm": f"{row['eta_ohm']:.3f}",
-            "eta_conc": f"{row['eta_conc']:.3f}",
-        }
-        for row in table_rows_raw
-    ]
-    store_data = [point.to_dict() for point in details]
-    points_grid = []
-    for point in store_data:
-        equations_text = "\n".join(
-            f"{idx+1}. {step['name']} -> {step['expression']} = {step['result']:.4f}"
-            for idx, step in enumerate(point["steps"])
-        )
-        points_grid.append(
-            {
-                "current": f"{point['current_density']:.3f}",
-                "voltage": f"{point['voltage']:.3f}",
-                "equations": equations_text,
-            }
-        )
-
-    breakdown = sim.voltage_breakdown(focus_current)
-    cards = (
-        f"{breakdown['V_ideal']:.3f} V",
-        f"{breakdown['eta_activacion']:.3f} V",
-        f"{breakdown['eta_ohmico']:.3f} V",
-        f"{breakdown['eta_concentracion']:.3f} V",
-    )
-
-    customdata = [
-        [
-            row["V_ideal"],
-            row["eta_act_total"],
-            row["eta_ohm"],
-            row["eta_conc"],
-        ]
-        for row in table_rows_raw
-    ]
-    pol_fig = {
-        "data": [
-            {
-                "x": currents.tolist(),
-                "y": voltages,
-                "mode": "lines+markers",
-                "name": "V celda",
-                "line": {"color": "#1F7A8C", "width": 3},
-                "customdata": customdata,
-                "hovertemplate": (
-                    "i = %{x:.3f} A/cm^2<br>"
-                    "V = %{y:.3f} V<br>"
-                    "V ideal = %{customdata[0]:.3f} V<br>"
-                    "eta_act = %{customdata[1]:.3f} V<br>"
-                    "eta_ohm = %{customdata[2]:.3f} V<br>"
-                    "eta_conc = %{customdata[3]:.3f} V<br>"
-                    "<extra></extra>"
-                ),
-            }
-        ],
-        "layout": {
-            "xaxis": {"title": "Corriente (A/cm^2)"},
-            "yaxis": {"title": "Voltaje (V)"},
-            "template": "plotly_white",
-            "margin": {"l": 40, "r": 10, "t": 10, "b": 40},
-        },
-    }
-
-    potentials = np.linspace(0.6, 1.3, 60)
-    activities = _activity_profile(catalyst, temperature, pH, potentials)
-    act_fig = {
-        "data": [
-            {
-                "x": potentials.tolist(),
-                "y": activities,
-                "mode": "lines",
-                "line": {"color": "#FFBF69", "width": 3},
-                "fill": "tozeroy",
-            }
-        ],
-        "layout": {
-            "xaxis": {"title": "Potencial (V vs SHE)"},
-            "yaxis": {"title": "Actividad relativa", "type": "log", "rangemode": "tozero"},
-            "template": "plotly_white",
-            "margin": {"l": 50, "r": 10, "t": 10, "b": 40},
-        },
-    }
-
-    selected_rows = [0] if table_rows else []
-
-    return (
-        pol_fig,
-        act_fig,
-        *cards,
-        table_rows,
-        points_grid,
-        selected_rows,
-        store_data,
-        None,
-    )
-
-
-@app.callback(
-    Output("selected-point", "children"),
-    Output("equation-steps-table", "data"),
-    Output("equation-detail", "children"),
-    Input("detail-store", "data"),
-    Input("results-table", "selected_rows"),
-)
-def update_equation_detail(store_data, selected_rows):
-    if not store_data:
-        message = "Selecciona un punto en la tabla para visualizar las ecuaciones evaluadas."
-        return message, [], message
-    idx = 0
-    if selected_rows:
-        idx = min(selected_rows[0], len(store_data) - 1)
-    detail_point = store_data[idx]
-    steps = detail_point["steps"]
-    contrib = detail_point["contributions"]
-    summary_cards = [
-        html.H5(f"Detalle para i = {detail_point['current_density']:.3f} A/cm^2", className="mb-3"),
-        dbc.Row(
-            [
-                dbc.Col(dbc.Card([dbc.CardHeader("V ideal"), html.H4(f"{contrib['V_ideal']:.3f} V")]), md=3),
-                dbc.Col(
-                    dbc.Card([dbc.CardHeader("eta_act total"), html.H4(f"{contrib['eta_act_total']:.3f} V")]), md=3
-                ),
-                dbc.Col(dbc.Card([dbc.CardHeader("eta_ohm"), html.H4(f"{contrib['eta_ohm']:.3f} V")]), md=3),
-                dbc.Col(dbc.Card([dbc.CardHeader("eta_conc"), html.H4(f"{contrib['eta_conc']:.3f} V")]), md=3),
-            ],
-            className="gy-2 mb-3",
-        ),
-    ]
-    steps_table = [
-        {"name": step["name"], "expression": step["expression"], "result": f"{step['result']:.6f}"} for step in steps
-    ]
-
-    accordion_items = []
-    for i, step in enumerate(steps):
-        values_list = html.Ul([html.Li(f"{k} = {v:.6g}") for k, v in step["values"].items()])
-        accordion_items.append(
-            dbc.AccordionItem(
-                [
-                    html.P(step["expression"], className="text-muted"),
-                    values_list,
-                    html.P(f"Resultado: {step['result']:.6f}"),
-                ],
-                title=f"{step['name']}",
-                item_id=str(i),
-            )
-        )
-    accordion = dbc.Accordion(accordion_items, always_open=False, flush=True)
-    return summary_cards, steps_table, accordion
-
-
-@app.callback(
-    Output("download-table", "data"),
-    Input("download-btn", "n_clicks"),
-    State("detail-store", "data"),
-    prevent_initial_call=True,
-)
-def download_table(n_clicks, store_data):
-    if not n_clicks or not store_data:
-        raise dash.exceptions.PreventUpdate
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(
-        [
-            "current_density",
-            "voltage",
-            "V_ideal",
-            "eta_act_total",
-            "eta_act_an",
-            "eta_act_cat",
-            "eta_ohm",
-            "eta_conc",
-        ]
-    )
-    for point in store_data:
-        contrib = point["contributions"]
-        writer.writerow(
-            [
-                f"{point['current_density']:.6f}",
-                f"{point['voltage']:.6f}",
-                f"{contrib['V_ideal']:.6f}",
-                f"{contrib['eta_act_total']:.6f}",
-                f"{contrib['eta_act_an']:.6f}",
-                f"{contrib['eta_act_cat']:.6f}",
-                f"{contrib['eta_ohm']:.6f}",
-                f"{contrib['eta_conc']:.6f}",
-            ]
-        )
-    return {"content": buffer.getvalue(), "filename": "curva_detallada.csv"}
 
 
 if __name__ == "__main__":
