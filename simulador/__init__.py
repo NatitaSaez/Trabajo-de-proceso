@@ -9,9 +9,20 @@ Este paquete agrupa utilidades para:
 * Explorar el desempeno de catalizadores mediante funciones de mas alto nivel.
 """
 
-from . import constants, data, detail, electrochemistry, models, orr, simulation
+from . import (
+    config_v2,
+    constants,
+    data,
+    detail,
+    electrochemistry,
+    models,
+    orr,
+    simulation,
+    simulation_v2,
+)
 
 __all__ = [
+    "config_v2",
     "constants",
     "data",
     "detail",
@@ -19,4 +30,5 @@ __all__ = [
     "models",
     "orr",
     "simulation",
+    "simulation_v2",
 ]

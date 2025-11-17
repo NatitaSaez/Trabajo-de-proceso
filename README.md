@@ -152,3 +152,10 @@ En `diagrama.svg` encontrarás un esquema visual listo para insertar en presenta
 Puedes abrirlo con cualquier visor SVG o incrustarlo directamente en reportes para compartir la arquitectura del simulador con otros especialistas.
 
 ![Diagrama de arquitectura y flujo](diagrama.svg)
+
+## Modo v2 (nuevos requerimientos)
+
+- Núcleo 0D configurable (YAML) con doble electrodo, modelos Tafel/Butler-Volmer, capas óhmicas en serie y pérdidas de concentración opcionales.
+- CLI v2: `python cli_v2.py --config examples/config.yml --output-dir outputs` (agrega `--with-experimental examples/exp_data.csv` para validar vs. CSV).
+- GUI v2: `python interfaz_usuario/app.py` con controles para dos electrodos, lista de temperaturas, tabla editable de capas óhmicas, toggle de concentración y carga de CSV experimental.
+- Ejemplos: `examples/config.yml` y `examples/exp_data.csv` sirven como plantilla de entrada.
