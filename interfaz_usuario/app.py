@@ -95,11 +95,15 @@ def _build_config_from_inputs(values: Dict) -> SimulationConfigV2:
     layers = []
     for row in values["ohm_layers"]:
         try:
+            delta_m = float(row.get("delta", 0.0))
+            kappa_s_m = float(row.get("kappa_ref", 0.0))
+            delta_cm = delta_m * 100.0
+            kappa_s_cm = kappa_s_m / 100.0
             layers.append(
                 OhmicLayer(
                     name=row.get("name", "layer"),
-                    delta=float(row.get("delta", 0.0)),
-                    kappa_ref=float(row.get("kappa_ref", 0.0)),
+                    delta=delta_cm,
+                    kappa_ref=kappa_s_cm,
                     Ea_kappa=float(row["Ea_kappa"]) if row.get("Ea_kappa") not in (None, "") else None,
                     T_ref=float(row.get("T_ref", values["T_ref"])),
                 )
@@ -145,8 +149,8 @@ def _point_to_row(p: PointResultV2) -> Dict:
 
 
 DEFAULT_OHMIC_LAYERS = [
-    {"name": "membrana", "delta": 0.005, "kappa_ref": 0.1, "Ea_kappa": 15000, "T_ref": 298.15},
-    {"name": "electrolito", "delta": 0.01, "kappa_ref": 0.5, "Ea_kappa": 15000, "T_ref": 298.15},
+    {"name": "membrana", "delta": 0.0005, "kappa_ref": 10.0, "Ea_kappa": 15000, "T_ref": 298.15},
+    {"name": "electrolito", "delta": 0.001, "kappa_ref": 50.0, "Ea_kappa": 15000, "T_ref": 298.15},
 ]
 
 # --- Defaults from config.yml -----------------------------------------------------------------
@@ -172,20 +176,26 @@ def _load_defaults():
         }
 
     ohm_layers = [
-        {"name": l.name, "delta": l.delta, "kappa_ref": l.kappa_ref, "Ea_kappa": l.Ea_kappa, "T_ref": l.T_ref}
+        {
+            "name": l.name,
+            "delta": l.delta / 100.0,
+            "kappa_ref": l.kappa_ref * 100.0,
+            "Ea_kappa": l.Ea_kappa,
+            "T_ref": l.T_ref,
+        }
         for l in cfg.ohmic.layers
     ] or DEFAULT_OHMIC_LAYERS
 
     temps_list = cfg.operating.temperatures
-    temps_default = min(temps_list) if temps_list else ""
+    temps_default = ", ".join(f"{t:g}" for t in temps_list) if temps_list else ""
 
     return {
-        # Si hay lista/rango de T en config, usar el menor valor como default en la UI.
-        "temps": str(temps_default),
+        # Si hay lista/rango de T en config, usar esa lista tal cual como default en la UI.
+        "temps": temps_default,
         "j_min": cfg.operating.j_min,
         "j_max": cfg.operating.j_max,
         "n_points": cfg.operating.n_points,
-        "use_conc": cfg.operating.use_concentration_losses,
+        "use_conc": cfg.operating.use_concentration_losses or cfg.mass_transfer.enabled,
         "V_ref": cfg.thermo.V_ref,
         "delta_s_ref": cfg.thermo.delta_s_ref,
         "T_ref": cfg.thermo.T_ref,
@@ -203,6 +213,7 @@ def _load_defaults():
         "delta_dif": cfg.mass_transfer.delta_dif,
         **_electrode_defaults(cfg.electrode_A, "a"),
         **_electrode_defaults(cfg.electrode_B, "b"),
+        "enable_b": cfg.electrode_B is not None,
     }
 
 
@@ -249,7 +260,7 @@ operating_controls = dbc.Card(
                 html.Hr(),
                 dbc.Row(
                     [
-                        build_number_input("V-ref", "V_ref (V)", _d("V_ref", 1.23), 0.01, 0),
+                        build_number_input("V-ref", "V_ref (V)", _d("V_ref", 1.298), 0.01, 0),
                         build_number_input("delta-s", "ΔS° (J/mol.K)", _d("delta_s_ref", 163.0), 1, None),
                         build_number_input("T-ref", "T_ref (K)", _d("T_ref", 298.15), 1, 200),
                         build_number_input("n-electrons", "n e-", _d("n_e", 2), 1, 1),
@@ -283,7 +294,11 @@ def electrode_card(prefix: str, title: str, enable_toggle: bool = False) -> dbc.
     header_children = [title]
     if enable_toggle:
         header_children.append(
-            dbc.Checklist(options=[{"label": "Activar electrodo B", "value": "enable"}], value=[], id="enable-b")
+            dbc.Checklist(
+                options=[{"label": "Activar electrodo B", "value": "enable"}],
+                value=["enable"] if _d("enable_b", False) else [],
+                id="enable-b",
+            )
         )
     return dbc.Card(
         [
@@ -337,8 +352,8 @@ ohmic_table = dash_table.DataTable(
     id="ohm-layers",
     columns=[
         {"name": "name", "id": "name", "type": "text"},
-        {"name": "delta (cm)", "id": "delta", "type": "numeric"},
-        {"name": "kappa_ref (S/cm)", "id": "kappa_ref", "type": "numeric"},
+        {"name": "delta (m)", "id": "delta", "type": "numeric"},
+        {"name": "kappa_ref (S/m)", "id": "kappa_ref", "type": "numeric"},
         {"name": "Ea_kappa (J/mol)", "id": "Ea_kappa", "type": "numeric"},
         {"name": "T_ref (K)", "id": "T_ref", "type": "numeric"},
     ],
@@ -372,7 +387,12 @@ mass_card = dbc.Card(
         dbc.CardHeader("Pérdidas por concentración"),
         dbc.CardBody(
             [
-                dbc.Checklist(options=[{"label": "Incluir η_conc", "value": "conc"}], value=[], id="use-conc", switch=True),
+                dbc.Checklist(
+                    options=[{"label": "Incluir η_conc", "value": "conc"}],
+                    value=["conc"] if _d("use_conc", False) else [],
+                    id="use-conc",
+                    switch=True,
+                ),
                 dbc.Row(
                     [
                         build_number_input("j-lim", "j_lim (A/cm²)", _d("j_lim", None), 0.1, 0),

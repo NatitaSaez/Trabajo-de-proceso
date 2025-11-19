@@ -45,7 +45,7 @@ KINETICS_CATHODE = ElectrodeKinetics(
 OHMIC_MODEL = OhmicModel(
     conductivity_ref=0.1,
     activation_energy=15_000.0,
-    membrane_thickness_cm=0.005,  # 50 um
+    membrane_thickness_cm=0.05,  # 50 um
     contact_resistance=0.02,
     electrolyte_resistance=0.05,
 )

@@ -25,6 +25,18 @@ def _maybe_float(value: Any) -> float | None:
     return float(value)
 
 
+def _normalize_kinetic_model(value: Any) -> str:
+    """Normaliza la etiqueta del modelo cinético para aceptar alias (underscore, BV, etc.)."""
+
+    if value is None:
+        return "tafel"
+    normalized = str(value).strip().lower()
+    normalized = normalized.replace("_", "-").replace(" ", "-")
+    if normalized in {"butler-volmer", "butler", "volmer", "b-v", "bv"}:
+        return "butler-volmer"
+    return normalized
+
+
 @dataclass
 class OperatingGrid:
     """Rangos de operación para los barridos de j y T."""
@@ -96,7 +108,7 @@ class ElectrodeKineticsV2:
     def from_dict(cls, data: Mapping[str, Any]) -> "ElectrodeKineticsV2":
         return cls(
             name=str(data.get("name", "electrode")),
-            kinetic_model=str(data.get("kinetic_model", "tafel")).lower(),
+            kinetic_model=_normalize_kinetic_model(data.get("kinetic_model", "tafel")),
             n=int(data.get("n", 2)),
             alpha=_maybe_float(data.get("alpha", 0.5)),
             alpha_a=_maybe_float(data.get("alpha_a")),
