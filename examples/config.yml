@@ -4,14 +4,14 @@ units:
   T: "K"        # Nota: declarativo; no se valida en el código.
 
 operating_conditions:
-  T_list: [298.15, 353.15]   # 25 °C y 80 °C
+  T_list: [293.15,313.15, 333.15,353.15]   # 20 °C, 40 °C, 60 °C, 80 °C
   j_min: 0.01                # A/cm2
-  j_max: 1.5                 # A/cm2
+  j_max: 4.5                 # A/cm2
   n_points: 60
   use_concentration_losses: true
 
 thermo:
-  V_ref: 1.23                # V_rev a 25 °C aprox.
+  V_ref: 1.298                # V_rev a 25 °C aprox.
   delta_s_ref: 163.0         # J/mol/K
   T_ref: 298.15
   n: 2
@@ -21,21 +21,25 @@ thermo:
   activity_h2o: 1.0          # solo si use_nernst=true
 
 electrode_A:
-  # Cátodo: HER en Ni foam (Lee 2022)
+ # Cátodo: HER en Ni foam (Lee 2022)
   name: "Ni-HER-Lee2022"
-  kinetic_model: "tafel"
+  kinetic_model: "butler_volmer"
   n: 2
-  alpha: 0.8                 # efectivo (simplifica alpha_a/alpha_c reportados)
+  alpha: 0.78                # efectivo (simplifica alpha_a/alpha_c reportados)
+  alpha_a: 0.78
+  alpha_c: 1.22
   j0_ref: 0.00234            # A/cm2  (23.4 A/m2 / 1e4)
   Ea: 40000                  # J/mol
   T_ref: 353.15              # K (80 °C)
 
 electrode_B:
-  # Ánodo: OER en Ni foam (Lee 2022)
+   # Ánodo: OER en Ni foam (Lee 2022)
   name: "Ni-OER-Lee2022"
-  kinetic_model: "tafel"
+  kinetic_model: "butler_volmer"
   n: 2
-  alpha: 1.1                 # efectivo para OER
+  alpha: 1.14                # efectivo para OER
+  alpha_a: 1.14
+  alpha_c: 0.86
   j0_ref: 0.00093            # A/cm2 (9.3 A/m2 / 1e4)
   Ea: 46156                  # J/mol
   T_ref: 343.15              # K (~70 °C)
@@ -43,33 +47,16 @@ electrode_B:
 ohmic:
   components:
     # Ojo: el núcleo usa cm y S/cm. Se convirtieron los datos desde m y S/m.
-    - name: "electrodo_negativo_Ni"
-      delta: 0.07            # cm (0.0007 m)
-      kappa_ref: 1.43e5      # S/cm (1.43e7 S/m)
-      Ea_kappa: 0            # sin dependencia T
-      T_ref: 298.15
+    - name: "resistencia omnica"
+      delta: 0.046           # m (0.46 mm)
+      kappa_ref: 0.05          # S/m (Ajustado para 80C)
+      # **ESTE VALOR ES LA CLAVE PARA REPLICAR LA TENDENCIA DE TEMPERATURA**
+      Ea_kappa: 15000          # J/mol (AJUSTADO para coincidir con la tendencia 50->95 S/m)
+      T_ref: 298.15            # K (25 C)
 
-    - name: "electrodo_positivo_Ni"
-      delta: 0.07            # cm (0.0007 m)
-      kappa_ref: 1.43e5      # S/cm
-      Ea_kappa: 0
-      T_ref: 298.15
-
-    - name: "separador_Zirfon"
-      delta: 0.046           # cm (0.00046 m)
-      kappa_ref: 0.05        # S/cm (5 S/m)
-      Ea_kappa: 15000        # J/mol
-      T_ref: 298.15
-
-    - name: "electrolito_KOH_30wt"
-      delta: 0.2             # cm (0.002 m)
-      kappa_ref: 6.0         # S/cm (600 S/m)
-      Ea_kappa: 12000        # J/mol
-      T_ref: 353.15
-
-  extra_resistance: 0.02     # ohm*cm2 (contactos/colectores; parámetro libre)
+  extra_resistance: 0.02    # ohm*cm2 (contactos/colectores; parámetro libre)
 
 mass_transfer:
   enabled: true
-  j_lim: 2.0                 # A/cm2 (corriente límite efectiva)
+  j_lim: 5.0                 # A/cm2 (corriente límite efectiva)
   Ea_jlim: 0                 # J/mol (sin dependencia inicial)
